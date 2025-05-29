@@ -3,4 +3,4 @@ This is my understanding of PTX and how to write, compile and execute kernels to
 
 
 # References
-This repo skeleton code was inspired from ![](https://github.com/unixpickle/learn-ptx)
+This repo skeleton code was inspired from ![here](https://github.com/unixpickle/learn-ptx)
