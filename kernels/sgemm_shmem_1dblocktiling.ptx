@@ -1,0 +1,284 @@
+.version 8.0
+.target sm_86 
+.address_size 64
+
+
+/*
+I am using following constants
+
+block size = 512 (1D)
+We split the 8196x8196 into smaller units of 64x64.
+Where each block is responsilbe to compute 64x64 = (4096)
+
+Since, each block has 512 threads, each thread has to compute multiple output
+element. Each thread has to compute 8 outputs (4096/512).
+
+BN = 64
+BK = 8
+BT = 8
+*/
+
+.visible .entry sgemm_shmem_1dblocktiling(
+    .param .u64 ptrA,
+    .param .u64 ptrB,
+    .param .u64 ptrOut
+) {
+
+    // declaring shared memory to implement blocking
+    // Each block of A, B is of shape (64x8) and (8x64) respectively
+    .shared .align 4 .f32 As[512];
+    .shared .align 4 .f32 Bs[512];
+
+    // declaring registers for tid, bid, and bdim.
+    .reg .u32 %t_id_x;
+    .reg .u32 %t_id_y;
+    .reg .u32 %b_dim_x;
+    .reg .u32 %b_dim_y;
+    .reg .u32 %b_id_x;
+    .reg .u32 %b_id_y;
+
+    // threadid inside the block. 
+    .reg .u32 %tr;
+    .reg .u32 %tc;
+    .reg .u32 %irA; // inner_row A
+    .reg .u32 %irB; // inner_row B
+    .reg .u32 %icA; // inner_col A
+    .reg .u32 %icB; // inner_col B
+
+    // register to hold blockssize;
+    .reg .u32 %BN;
+    .reg .u32 %TM;
+    .reg .u32 %BK;
+
+    // register to store the coloum value
+    .reg .f32 %btmp;
+
+    // to store the multiple output computation by a thread.
+    .reg .f32 %thread_result<8>;
+
+    // registers for the loop
+    .reg .s32 %i; // for moving the A, B blocks right and bottom respc.
+    .reg .s32 %dotid; // to move downward of B block
+    .reg .pred %p;
+
+    // registers to store the address of Array's
+    .reg .u64 %r_ptrA;
+    .reg .u64 %r_ptrB;
+    .reg .u64 %r_ptrO;
+
+    // testing
+    .reg .u64 %r_A;
+    .reg .u64 %r_B;
+    .reg .u64 %r_O;
+
+    .reg .u32 %r_As;
+    .reg .u32 %r_Bs;
+
+    // the register which holds the value from A, B which are multiplied.
+    .reg .f32 %val_a;
+    .reg .f32 %val_b;
+    .reg .f32 %val_res;
+
+    // register for holding index of A and B array
+    .reg .u32 %r_aidx;
+    .reg .u32 %r_bidx;
+    .reg .u32 %r_oidx;
+
+    .reg .u32 %r_asidx;
+    .reg .u32 %r_bsidx;
+
+    // register for holding the address of computation
+    .reg .u64 %r_addr_a;
+    .reg .u64 %r_addr_b;
+    .reg .u64 %r_addr_o;
+
+    .reg .u32 %r_addr_as;
+    .reg .u32 %r_addr_bs;
+
+    // temp regisers
+    .reg .u64 %temp_u64;
+    .reg .u32 %temp_u32;
+
+    // populating the constants;
+    mov.u32 %BN, 64;
+    mov.u32 %BK, 8;
+    mov.u32 %TM, 8;
+
+
+    // init thread results to 0;
+    mov.f32 %thread_result0, 0.0;
+    mov.f32 %thread_result1, 0.0;
+    mov.f32 %thread_result2, 0.0;
+    mov.f32 %thread_result3, 0.0;
+    mov.f32 %thread_result4, 0.0;
+    mov.f32 %thread_result5, 0.0;
+    mov.f32 %thread_result6, 0.0;
+    mov.f32 %thread_result7, 0.0;
+
+    // loading address form param state space (ss) to register ss.
+    ld.param.u64 %r_ptrA, [ptrA];
+    ld.param.u64 %r_ptrB, [ptrB];
+    ld.param.u64 %r_ptrO, [ptrOut];
+
+    // loading the address of shared memory.
+    mov.u32 %r_As, As;
+    mov.u32 %r_Bs, Bs;
+
+
+    // moving data from special registers to general purpose registers.
+    mov.u32 %t_id_x, %tid.x;
+    mov.u32 %b_id_x, %ctaid.x;
+    mov.u32 %b_id_y, %ctaid.y;
+    mov.u32 %b_dim_x, %ntid.x;
+
+    // computing tr, ta
+    div.u32 %tr, %t_id_x, %BN;
+    rem.u32 %tc, %t_id_x, %BN;
+
+    // computing irA, irB, icA, icB -> used for indexing inner loop
+    div.u32 %irA, %t_id_x, %BK;
+    rem.u32 %icA, %t_id_x, %BK;
+    div.u32 %irB, %t_id_x, %BN;
+    rem.u32 %icB, %t_id_x, %BN;
+
+    // A = ptrA + 4*(bid.x * BN * 8192)
+    mul.lo.u32 %r_aidx, %b_id_x, %BN;
+    mul.lo.u32 %r_aidx, %r_aidx, 8192;
+    mul.wide.u32 %r_A, %r_aidx, 4;
+    add.u64 %r_A, %r_A, %r_ptrA; 
+
+    // B = ptrB + 4*(bid.y * BN)
+    mul.lo.u32 %r_bidx, %b_id_y, %BN;
+    mul.wide.u32 %r_B, %r_bidx, 4;
+    add.u64 %r_B, %r_B, %r_ptrB;
+
+    // O = ptrO = 4*(bid.x*BN*8192 + bid.y * BN); 
+    add.u32 %r_oidx, %r_aidx, %r_bidx;
+    mul.wide.u32 %r_O, %r_oidx, 4;
+    add.u64 %r_O, %r_O, %r_ptrO;
+
+    // initializing acc to be zero
+    mov.s32 %i, 0;
+
+    // loop to move the A block towards right and B block towards left
+loop_start:
+    setp.lt.s32 %p, %i, 8192;
+    @!%p bra loop_end;
+
+    // loads the (64x8), (8x64) from A, B ----> shared memory As, Bs
+    // BK = 8, N = 8192
+    // performing As[irA*8 + icA] = A[irA*8192 + icA]
+    mad.lo.u32 %r_asidx, %irA, 8, %icA;
+    mul.lo.u32 %r_addr_as, %r_asidx, 4;
+    add.u32 %r_addr_as, %r_addr_as, %r_As;
+
+    mad.lo.u32 %r_aidx, %irA, 8192, %icA;
+    mul.wide.s32 %r_addr_a, %r_aidx, 4;
+    add.u64 %r_addr_a, %r_A, %r_addr_a; 
+
+    ld.global.f32 %val_a, [%r_addr_a];
+    st.shared.f32 [%r_addr_as], %val_a;
+
+    // performing Bs[irB*64 + icB] = B[irB*8192 + icB]
+    mad.lo.u32 %r_bsidx, %irB, 64, %icB;
+    mul.lo.u32 %r_addr_bs, %r_bsidx, 4;
+    add.u32 %r_addr_bs, %r_addr_bs, %r_Bs;
+
+    mad.lo.u32 %r_bidx, %irB, 8192, %icB;
+    mul.wide.s32 %r_addr_b, %r_bidx, 4;
+    add.u64 %r_addr_b, %r_B, %r_addr_b; 
+
+    ld.global.f32 %val_b, [%r_addr_b];
+    st.shared.f32 [%r_addr_bs], %val_b;
+
+    // sync call
+    bar.sync 0;
+
+    // updating the A and B address to move the 32x32 window.
+    // r_A := r_A + 4*BK
+    // r_B := r_B + 4*(BK * 8192)
+    add.u64 %r_A, %r_A, 32;
+    add.u64 %r_B, %r_B, 262144;
+
+
+    // loop which moves down inside B across each column
+    mov.u32 %dotid, 0;
+    loop_inner_B_start:
+        setp.lt.s32 %p, %dotid, %BK;
+        @!%p bra loop_inner_B_end;
+
+        // loading btmp := Bs[dotidx * BN + tc]
+        mad.lo.u32 %r_bsidx, %dotid, %BN, %tc;
+        mul.lo.u32 %r_addr_bs, %r_bsidx, 4;
+        add.u32 %r_addr_bs, %r_addr_bs, %r_Bs;
+
+        ld.shared.f32 %val_b, [%r_addr_bs];
+
+        // unrolled loop for moving across each row downwards to
+        // compute multiple results 
+        // val_a := As[(tr*TM + residx)*BK + dotidx]
+        mad.lo.u32 %temp_u32, %tr, %TM, 0;
+        mad.lo.u32 %r_asidx, %temp_u32, %BK, %dotid;
+        mul.lo.u32 %r_addr_as, %r_asidx, 4;
+        add.u32 %r_addr_as, %r_addr_as, %r_As;
+
+        ld.shared.f32 %val_a, [%r_addr_as];
+        fma.rn.f32 %thread_result0, %val_a, %val_b, %thread_result0;
+        // increamenting Bs addr by 4*BK (equivalent to incrementing residx)
+        add.u32 %r_addr_as, %r_addr_as, 32;
+        ld.shared.f32 %val_a, [%r_addr_as];
+        fma.rn.f32 %thread_result1, %val_a, %val_b, %thread_result1;
+        add.u32 %r_addr_as, %r_addr_as, 32;
+        ld.shared.f32 %val_a, [%r_addr_as];
+        fma.rn.f32 %thread_result2, %val_a, %val_b, %thread_result2;
+        add.u32 %r_addr_as, %r_addr_as, 32;
+        ld.shared.f32 %val_a, [%r_addr_as];
+        fma.rn.f32 %thread_result3, %val_a, %val_b, %thread_result3;
+        add.u32 %r_addr_as, %r_addr_as, 32;
+        ld.shared.f32 %val_a, [%r_addr_as];
+        fma.rn.f32 %thread_result4, %val_a, %val_b, %thread_result4;
+        add.u32 %r_addr_as, %r_addr_as, 32;
+        ld.shared.f32 %val_a, [%r_addr_as];
+        fma.rn.f32 %thread_result5, %val_a, %val_b, %thread_result5;
+        add.u32 %r_addr_as, %r_addr_as, 32;
+        ld.shared.f32 %val_a, [%r_addr_as];
+        fma.rn.f32 %thread_result6, %val_a, %val_b, %thread_result6;
+        add.u32 %r_addr_as, %r_addr_as, 32;
+        ld.shared.f32 %val_a, [%r_addr_as];
+        fma.rn.f32 %thread_result7, %val_a, %val_b, %thread_result7;
+
+
+        add.s32 %dotid, %dotid, 1;
+        bra loop_inner_B_start;
+
+    loop_inner_B_end:
+
+    bar.sync 0;
+    add.s32 %i, %i, 8;
+    bra loop_start;
+
+loop_end:
+    // store the result in O
+    mad.lo.s32 %temp_u32, %tr, %TM, 0;
+    mad.lo.s32 %r_oidx, %temp_u32, 8192, %tc;
+    mul.wide.s32 %r_addr_o, %r_oidx, 4;
+    add.u64 %r_addr_o, %r_O, %r_addr_o;
+
+    st.global.f32 [%r_addr_o], %thread_result0; 
+
+    add.u64 %r_addr_o, %r_addr_o, 32768;
+    st.global.f32 [%r_addr_o], %thread_result1; 
+    add.u64 %r_addr_o, %r_addr_o, 32768;
+    st.global.f32 [%r_addr_o], %thread_result2; 
+    add.u64 %r_addr_o, %r_addr_o, 32768;
+    st.global.f32 [%r_addr_o], %thread_result3; 
+    add.u64 %r_addr_o, %r_addr_o, 32768;
+    st.global.f32 [%r_addr_o], %thread_result4; 
+    add.u64 %r_addr_o, %r_addr_o, 32768;
+    st.global.f32 [%r_addr_o], %thread_result5; 
+    add.u64 %r_addr_o, %r_addr_o, 32768;
+    st.global.f32 [%r_addr_o], %thread_result6; 
+    add.u64 %r_addr_o, %r_addr_o, 32768;
+    st.global.f32 [%r_addr_o], %thread_result7; 
+
+}

@@ -24,11 +24,12 @@ kernels.
 
 # Performance comparision.
 
-| Kernel Names   | Time   | Speedup |
-| ---------------|--------|---------|
-| Naive Kernel   | 15.64s |  1.00   |
-| Mem coalescing | 8.62s  |  1.81   |
-| sh_mem blocking| 2.44s  |  6.40   |
+| Kernel Names         | Time   | Speedup |
+| ---------------------|--------|---------|
+| Naive Kernel         | 15.64s |  1.00   |
+| Mem coalescing       | 8.62s  |  1.81   |
+| sh_mem blocking      | 2.44s  |  6.40   |
+| sh_mem 1d tile blking| 1.24s  |  12.62  |
 
 # References
 This repo skeleton code was inspired from [here](https://github.com/unixpickle/learn-ptx)

@@ -26,7 +26,22 @@ def evaluate_matmul_fn(fn: Callable):
             ),
             block=(block_size, block_size, 1),
         )
+    generic_eval_matmul(call_fn)
 
+def evaluate_matmul_shmem_1dblocktiling_fn(fn: Callable):
+    def call_fn(A: np.ndarray, B: np.ndarray, A_buf: Any, B_buf: Any, out_buf: Any):
+        block_size = 512 
+        fn(
+            A_buf,
+            B_buf,
+            out_buf,
+            grid=(
+                A.shape[0] // 64,
+                A.shape[1] // 64,
+                1,
+            ),
+            block=(block_size, 1, 1),
+        )
     generic_eval_matmul(call_fn)
 
 
@@ -71,8 +86,13 @@ def matmul_shmem_blocking():
     fn = compile_function("sgemm_shmem_blocking.ptx", "sgemm_shmem_blocking")
     evaluate_matmul_fn(fn)
 
+def matmul_shmem_1dblocktiling():
+    fn = compile_function("sgemm_shmem_1dblocktiling.ptx", "sgemm_shmem_1dblocktiling")
+    evaluate_matmul_shmem_1dblocktiling_fn(fn)
+
 if __name__ == "__main__":
-    matmul_simple()
-    matmul_mem_coalesce()
-    matmul_shmem_blocking()
+    # matmul_simple()
+    # matmul_mem_coalesce()
+    # matmul_shmem_blocking()
+    matmul_shmem_1dblocktiling()
 
