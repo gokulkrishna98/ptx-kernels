@@ -1,0 +1,104 @@
+.version 8.0
+.target sm_86 
+.address_size 64
+
+.visible .entry sgemm_naive(
+    .param .u64 ptrA,
+    .param .u64 ptrB,
+    .param .u64 ptrOut,
+    .param .u32 numBlocks
+) {
+    // declaring registers for tid, bid, and bdim.
+    .reg .u32 %t_id_x;
+    .reg .u32 %t_id_y;
+    .reg .u32 %b_dim_x;
+    .reg .u32 %b_dim_y;
+    .reg .u32 %b_id_x;
+    .reg .u32 %b_id_y;
+
+    // declaring registers to identify which thread we are using.
+    .reg .u32 %x;
+    .reg .u32 %y;
+
+    // accumulator register to add part of dot product.
+    .reg .f32 %f_acc;
+
+    // registers for the loop
+    .reg .s32 %i;
+    .reg .pred %p;
+
+    // registers to store the address of Array's
+    .reg .u64 %r_ptrA;
+    .reg .u64 %r_ptrB;
+    .reg .u64 %r_ptrO;
+
+    // the register which holds the value from A, B which are multiplied.
+    .reg .f32 %val_a;
+    .reg .f32 %val_b;
+    .reg .f32 %val_res;
+
+    // register for holding index of A and B array
+    .reg .s32 %r_aidx;
+    .reg .s32 %r_bidx;
+    .reg .s32 %r_oidx;
+
+    // register for holding the address of computation
+    .reg .u64 %r_addr_a;
+    .reg .u64 %r_addr_b;
+    .reg .u64 %r_addr_o;
+
+    // loading address form param state space (ss) to register ss.
+    ld.param.u64 %r_ptrA, [ptrA];
+    ld.param.u64 %r_ptrB, [ptrB];
+    ld.param.u64 %r_ptrO, [ptrOut];
+
+    // moving data from special registers to general purpose registers.
+    mov.u32 %t_id_x, %tid.x;
+    mov.u32 %t_id_y, %tid.y;
+    mov.u32 %b_id_x, %ctaid.x;
+    mov.u32 %b_id_y, %ctaid.y;
+    mov.u32 %b_dim_x, %ntid.x;
+    mov.u32 %b_dim_y, %ntid.y;
+
+    // computing x
+    mad.lo.u32 %x, %b_id_x, %b_dim_x, %t_id_x;
+    mad.lo.u32 %y, %b_id_y, %b_dim_y, %t_id_y;
+
+    // initializing acc to be zero
+    mov.f32 %f_acc, 0.0; 
+    mov.s32 %i, 0;
+
+loop_start:
+    setp.lt.s32 %p, %i, 8192;
+    @!%p bra loop_end;
+
+    // computing the A index -> x * 8192 + i
+    mad.lo.s32 %r_aidx, %x, 8192, %i;
+    mul.wide.s32 %r_addr_a, %r_aidx, 4;
+    add.u64 %r_addr_a, %r_ptrA, %r_addr_a;
+
+    // computing the B index -> i * 8192 + y
+    mad.lo.s32 %r_bidx, %i, 8192, %y;
+    mul.wide.s32 %r_addr_b, %r_bidx, 4;
+    add.u64 %r_addr_b, %r_ptrB, %r_addr_b;
+
+    // get A and B vals
+    ld.global.f32 %val_a, [%r_addr_a];
+    ld.global.f32 %val_b, [%r_addr_b];
+
+    // perform multiplication
+    mul.f32 %val_res, %val_a, %val_b; 
+    add.f32 %f_acc, %f_acc, %val_res;
+
+    add.s32 %i, %i, 1;
+    bra loop_start;
+
+loop_end:
+    // store the result in O
+    // computing the O index -> x * 8192 + y
+    mad.lo.s32 %r_oidx, %x, 8192, %y;
+    mul.wide.s32 %r_addr_o, %r_oidx, 4;
+    add.u64 %r_addr_o, %r_ptrO, %r_addr_o;
+
+    st.global.f32 [%r_addr_o], %f_acc; 
+}
