@@ -72,7 +72,7 @@ def matmul_shmem_blocking():
     evaluate_matmul_fn(fn)
 
 if __name__ == "__main__":
-    # matmul_simple()
-    # matmul_mem_coalesce()
+    matmul_simple()
+    matmul_mem_coalesce()
     matmul_shmem_blocking()
 
