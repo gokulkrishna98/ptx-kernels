@@ -3,7 +3,7 @@ This is my understanding of PTX and how to write, compile and execute kernels to
 
 # Setup
 Running on Intel 12th Gen i7 CPU and RTX 3050 mobile GPU (3.5GB HBM).  
-Trying to comput matmul. C = A*B. Where the size of A, B, C is `8192x8192`.
+Trying to compute matmul. C = A*B. Where the size of A, B, C is `8192x8192`.
 
 We compare the accuracy using maximum absolute error of computation and baseline numpy result. It should be within `1e-3`.
 
